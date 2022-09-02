@@ -4,11 +4,14 @@ import com.qkrtkdwns3410.webflux.domain.Customer;
 import com.qkrtkdwns3410.webflux.domain.CustomerRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 import java.time.Duration;
 
@@ -24,10 +27,21 @@ import java.time.Duration;
  * 2022-09-01        qkrtkdwns3410       최초 생성
  */
 @RestController
-@RequiredArgsConstructor
 public class CustomerController {
       
       private final CustomerRepository customerRepository;
+      private final Sinks.Many<Customer> sink;
+      
+      // A 요청 -> Flux -> Stream
+      // B 요청 -> Flux -> Stream
+      // -> Flux.merge -> Sink
+      
+      public CustomerController(CustomerRepository customerRepository) {
+            this.customerRepository = customerRepository;
+            this.sink = Sinks.many()
+                             .multicast()
+                             .onBackpressureBuffer();
+      }
       
       /*
       2022-09-01 21:20:44.498  INFO 13064 --- [ctor-http-nio-2] reactor.Flux.UsingWhen.1                 : onSubscribe(FluxUsingWhen.UsingWhenSubscriber)
@@ -41,11 +55,11 @@ public class CustomerController {
       2022-09-01 21:20:44.506  INFO 13064 --- [ctor-http-nio-2] reactor.Flux.UsingWhen.1                 : onComplete()
       // Complete 되는 순간 모두 완료
       */
-      @GetMapping("/customer")
-      public Flux<Customer> findAll() {
-            return customerRepository.findAll()
-                                     .log();
-      }
+//      @GetMapping("/customer")
+//      public Flux<Customer> findAll() {
+//            return customerRepository.findAll()
+//                                     .log();
+//      }
       
       @GetMapping("/flux")
       public Flux<Integer> flux() {
@@ -74,6 +88,13 @@ public class CustomerController {
                        .log();
       }
       
+      @GetMapping(value = "/customer", produces = MediaType.APPLICATION_STREAM_JSON_VALUE)
+      public Flux<Customer> findAll() {
+            return customerRepository.findAll()
+                                     .delayElements(Duration.ofSeconds(1))
+                                     .log();
+      }
+      
       /* 2022-09-01 21:32:29.968  INFO 10932 --- [ctor-http-nio-2] reactor.Mono.UsingWhen.3                 : onSubscribe(MonoUsingWhen.MonoUsingWhenSubscriber)
        2022-09-01 21:32:29.968  INFO 10932 --- [ctor-http-nio-2] reactor.Mono.UsingWhen.3                 : request(unbounded)
        2022-09-01 21:32:29.970  INFO 10932 --- [ctor-http-nio-2] reactor.Mono.UsingWhen.3                 : onNext(Customer(id=2, firstName=Chloe, lastName=O'Brian))
@@ -83,5 +104,23 @@ public class CustomerController {
       public Mono<Customer> findById(@PathVariable Long id) {
             return customerRepository.findById(id)
                                      .log();
+      }
+      
+      @GetMapping(value = "/customer/sse") // 생략 - produces = MediaType.TEXT_EVENT_STREAM_VALUE
+      // 자바 스크립트에서 이벤트로 해당 값을 받을 수 있음.
+      public Flux<ServerSentEvent<Customer>> findAllSSE() {
+            return sink.asFlux()
+                       .map(c -> ServerSentEvent.builder(c)
+                                                .build())
+                       .doOnCancel(() -> {
+                             sink.asFlux()
+                                 .blockLast();
+                       });
+      }
+      
+      @PostMapping("/customer")
+      public Mono<Customer> save() {
+            return customerRepository.save(new Customer("gildong", "hong"))
+                                     .doOnNext(sink::tryEmitNext);
       }
 }
